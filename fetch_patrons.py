@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # Lee la lista de mecenas activos desde la API de Patreon y escribe public/patrons.json.
-# Renueva el access token en cada ejecución con el refresh token (así no caduca nunca).
+# - Renueva el access token en cada ejecución con el refresh token (así no caduca nunca).
+# - Descubre el Campaign ID solo (no hace falta darlo a mano).
 # Solo usa la librería estándar (no hace falta pip install).
 #
 # Variables de entorno (se configuran como "Secrets" en GitHub):
 #   PATREON_CLIENT_ID       -> Client ID del cliente creado en el portal de Patreon
 #   PATREON_CLIENT_SECRET   -> Client Secret de ese mismo cliente
 #   PATREON_REFRESH_TOKEN   -> Creator's Refresh Token (no caduca)
-#   PATREON_CAMPAIGN_ID     -> el ID numérico de tu campaña
 
 import json
 import os
@@ -18,9 +18,9 @@ from datetime import datetime, timezone
 CLIENT_ID = os.environ["PATREON_CLIENT_ID"]
 CLIENT_SECRET = os.environ["PATREON_CLIENT_SECRET"]
 REFRESH_TOKEN = os.environ["PATREON_REFRESH_TOKEN"]
-CAMPAIGN_ID = os.environ["PATREON_CAMPAIGN_ID"]
 
 TOKEN_URL = "https://www.patreon.com/api/oauth2/token"
+API = "https://www.patreon.com/api/oauth2/v2"
 
 
 def refresh_access_token():
@@ -48,10 +48,22 @@ def get(url, token):
         return json.loads(r.read())
 
 
+def get_campaign_id(token):
+    data = get(API + "/campaigns", token)
+    campaigns = data.get("data", [])
+    if not campaigns:
+        raise SystemExit(
+            "No se encontró ninguna campaña. Revisa que el cliente de Patreon "
+            "sea el de tu cuenta de creador."
+        )
+    return campaigns[0]["id"]
+
+
 def main():
     token = refresh_access_token()
+    campaign_id = get_campaign_id(token)
 
-    base = "https://www.patreon.com/api/oauth2/v2/campaigns/{}/members".format(CAMPAIGN_ID)
+    base = API + "/campaigns/{}/members".format(campaign_id)
     params = urlencode({
         "fields[member]": "full_name,patron_status",
         "page[count]": "1000",
