@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# Lee la lista de mecenas activos desde la API de Patreon y escribe public/patrons.json.
+# Lee la lista de mecenas activos desde la API de Patreon y escribe public/patrons.json,
+# AGRUPADOS por tier y ordenados de mayor a menor aporte.
 # - Renueva el access token en cada ejecución con el refresh token (así no caduca nunca).
 # - Descubre el Campaign ID solo (no hace falta darlo a mano).
 # Solo usa la librería estándar (no hace falta pip install).
@@ -65,42 +66,77 @@ def main():
 
     base = API + "/campaigns/{}/members".format(campaign_id)
     params = urlencode({
+        "include": "currently_entitled_tiers",
         "fields[member]": "full_name,patron_status",
+        "fields[tier]": "title,amount_cents",
         "page[count]": "1000",
     })
     url = base + "?" + params
 
-    names = []
+    tiers_by_id = {}          # id -> {"title":..., "amount_cents":...}
+    members = []              # lista de (nombre, tier_id o None)
+
     while url:
         data = get(url, token)
+
+        # Guarda la info de los tiers que aparecen en esta página
+        for inc in data.get("included", []):
+            if inc.get("type") == "tier":
+                a = inc.get("attributes", {})
+                tiers_by_id[inc["id"]] = {
+                    "title": (a.get("title") or "Mecenas").strip(),
+                    "amount_cents": a.get("amount_cents") or 0,
+                }
+
         for m in data.get("data", []):
             attr = m.get("attributes", {})
-            if attr.get("patron_status") == "active_patron":
-                name = (attr.get("full_name") or "").strip()
-                if name:
-                    names.append(name)
-        # Patreon devuelve la URL de la página siguiente en links.next (o nada al final)
+            if attr.get("patron_status") != "active_patron":
+                continue
+            name = (attr.get("full_name") or "").strip()
+            if not name:
+                continue
+            # De sus tiers activos, nos quedamos con el de mayor aporte
+            rel = m.get("relationships", {}).get("currently_entitled_tiers", {}).get("data", [])
+            tier_id, best = None, -1
+            for t in rel:
+                tid = t.get("id")
+                amt = tiers_by_id.get(tid, {}).get("amount_cents", 0)
+                if amt > best:
+                    best, tier_id = amt, tid
+            members.append((name, tier_id))
+
         url = data.get("links", {}).get("next")
 
-    # Quita duplicados y ordena alfabéticamente (sin distinguir mayúsculas)
-    seen = set()
-    uniq = []
-    for n in sorted(names, key=lambda s: s.lower()):
-        if n.lower() not in seen:
-            seen.add(n.lower())
-            uniq.append(n)
+    # Agrupa por tier
+    groups = {}
+    for name, tid in members:
+        groups.setdefault(tid, []).append(name)
 
+    tiers_out = []
+    for tid, names in groups.items():
+        info = tiers_by_id.get(tid, {"title": "Mecenas", "amount_cents": 0})
+        uniq = sorted(set(names), key=lambda s: s.lower())
+        tiers_out.append({
+            "title": info["title"],
+            "amount_cents": info["amount_cents"],
+            "patrons": uniq,
+        })
+
+    # Del que más aporta al que menos (esto es lo "escalonado")
+    tiers_out.sort(key=lambda t: t["amount_cents"], reverse=True)
+
+    count = sum(len(t["patrons"]) for t in tiers_out)
     out = {
         "updated": datetime.now(timezone.utc).isoformat(),
-        "count": len(uniq),
-        "patrons": uniq,
+        "count": count,
+        "tiers": tiers_out,
     }
 
     os.makedirs("public", exist_ok=True)
     with open("public/patrons.json", "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
 
-    print("Escritos {} mecenas en public/patrons.json".format(len(uniq)))
+    print("Escritos {} mecenas en {} tiers".format(count, len(tiers_out)))
 
 
 if __name__ == "__main__":
