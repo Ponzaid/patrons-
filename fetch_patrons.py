@@ -3,6 +3,7 @@
 # AGRUPADOS por tier y ordenados de mayor a menor aporte.
 # - Renueva el access token en cada ejecución con el refresh token (así no caduca nunca).
 # - Descubre el Campaign ID solo (no hace falta darlo a mano).
+# - NO fusiona mecenas con el mismo nombre: cada miembro cuenta una vez.
 # Solo usa la librería estándar (no hace falta pip install).
 #
 # Variables de entorno (se configuran como "Secrets" en GitHub):
@@ -75,6 +76,7 @@ def main():
 
     tiers_by_id = {}          # id -> {"title":..., "amount_cents":...}
     members = []              # lista de (nombre, tier_id o None)
+    status_counts = {}        # para el log: cuántos miembros hay de cada estado
 
     while url:
         data = get(url, token)
@@ -90,11 +92,11 @@ def main():
 
         for m in data.get("data", []):
             attr = m.get("attributes", {})
-            if attr.get("patron_status") != "active_patron":
+            status = attr.get("patron_status")
+            status_counts[status] = status_counts.get(status, 0) + 1
+            if status != "active_patron":
                 continue
-            name = (attr.get("full_name") or "").strip()
-            if not name:
-                continue
+            name = (attr.get("full_name") or "").strip() or "Mecenas anónimo"
             # De sus tiers activos, nos quedamos con el de mayor aporte
             rel = m.get("relationships", {}).get("currently_entitled_tiers", {}).get("data", [])
             tier_id, best = None, -1
@@ -107,7 +109,7 @@ def main():
 
         url = data.get("links", {}).get("next")
 
-    # Agrupa por tier
+    # Agrupa por tier (SIN quitar nombres repetidos: dos personas pueden llamarse igual)
     groups = {}
     for name, tid in members:
         groups.setdefault(tid, []).append(name)
@@ -115,11 +117,10 @@ def main():
     tiers_out = []
     for tid, names in groups.items():
         info = tiers_by_id.get(tid, {"title": "Mecenas", "amount_cents": 0})
-        uniq = sorted(set(names), key=lambda s: s.lower())
         tiers_out.append({
             "title": info["title"],
             "amount_cents": info["amount_cents"],
-            "patrons": uniq,
+            "patrons": sorted(names, key=lambda s: s.lower()),
         })
 
     # Del que más aporta al que menos (esto es lo "escalonado")
@@ -137,6 +138,7 @@ def main():
         json.dump(out, f, ensure_ascii=False, indent=2)
 
     print("Escritos {} mecenas en {} tiers".format(count, len(tiers_out)))
+    print("Estados de todos los miembros vistos en la API:", status_counts)
 
 
 if __name__ == "__main__":
