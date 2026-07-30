@@ -9,11 +9,16 @@
 # Variables de entorno (se configuran como "Secrets" en GitHub):
 #   PATREON_CLIENT_ID       -> Client ID del cliente creado en el portal de Patreon
 #   PATREON_CLIENT_SECRET   -> Client Secret de ese mismo cliente
-#   PATREON_REFRESH_TOKEN   -> Creator's Refresh Token (no caduca)
+#   PATREON_REFRESH_TOKEN   -> Refresh token actual. OJO: Patreon lo ROTA en cada uso,
+#                              así que el workflow tiene que volver a guardarlo (ver
+#                              ROTATED_TOKEN_FILE) o la siguiente ejecución dará 401.
+#   ROTATED_TOKEN_FILE      -> Ruta donde dejar el refresh token nuevo para que el
+#                              workflow lo escriba en el secret.
 
 import json
 import os
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from datetime import datetime, timezone
 
@@ -23,6 +28,24 @@ REFRESH_TOKEN = os.environ["PATREON_REFRESH_TOKEN"]
 
 TOKEN_URL = "https://www.patreon.com/api/oauth2/token"
 API = "https://www.patreon.com/api/oauth2/v2"
+
+
+def save_rotated_refresh_token(new_token):
+    # Patreon invalida el refresh token en cuanto lo usas y devuelve uno nuevo.
+    # Si no lo guardamos, la próxima ejecución intentará usar el gastado -> 401.
+    if not new_token or new_token == REFRESH_TOKEN:
+        return
+    print("::add-mask::" + new_token)
+    path = os.environ.get("ROTATED_TOKEN_FILE")
+    if not path:
+        print(
+            "AVISO: Patreon rotó el refresh token pero no hay ROTATED_TOKEN_FILE "
+            "donde guardarlo. La siguiente ejecución fallará con 401."
+        )
+        return
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(new_token)
+    print("Refresh token rotado: el workflow lo guardará en el secret.")
 
 
 def refresh_access_token():
@@ -39,8 +62,20 @@ def refresh_access_token():
         method="POST",
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
-    with urlopen(req, timeout=30) as r:
-        data = json.loads(r.read())
+    try:
+        with urlopen(req, timeout=30) as r:
+            data = json.loads(r.read())
+    except HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:500]
+        raise SystemExit(
+            "Patreon rechazó el refresh token (HTTP {}): {}\n"
+            "Si es un 401, el token guardado en el secret PATREON_REFRESH_TOKEN ya "
+            "fue usado y Patreon lo invalidó. Genera uno nuevo en el portal de "
+            "Patreon y actualiza el secret a mano; de ahí en adelante el workflow "
+            "se encarga de mantenerlo al día.".format(e.code, detail)
+        )
+    # Guardar ANTES de tocar la API: si la descarga falla, el token ya está a salvo.
+    save_rotated_refresh_token(data.get("refresh_token"))
     return data["access_token"]
 
 
