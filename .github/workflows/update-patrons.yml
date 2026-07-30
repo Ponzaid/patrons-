@@ -5,7 +5,9 @@ name: Update patrons
 
 on:
   schedule:
-    - cron: "0 * * * *"     # cada hora (UTC). Cambia a "0 */6 * * *" para cada 6 h, etc.
+    # Cada 6 h (UTC). Cada ejecución rota el refresh token, así que menos
+    # ejecuciones = menos oportunidades de romper la cadena de tokens.
+    - cron: "0 */6 * * *"
   workflow_dispatch:          # botón para correrlo a mano desde la pestaña Actions
 
 permissions:
@@ -33,7 +35,20 @@ jobs:
           PATREON_CLIENT_ID: ${{ secrets.PATREON_CLIENT_ID }}
           PATREON_CLIENT_SECRET: ${{ secrets.PATREON_CLIENT_SECRET }}
           PATREON_REFRESH_TOKEN: ${{ secrets.PATREON_REFRESH_TOKEN }}
+          ROTATED_TOKEN_FILE: ${{ runner.temp }}/patreon_refresh_token
         run: python fetch_patrons.py
+
+      # Patreon rota el refresh token en cada uso. Sin este paso, la ejecución
+      # siguiente usaría el token ya gastado y daría 401.
+      # `always()`: aunque la descarga falle después, el token nuevo debe guardarse.
+      - name: Guardar el refresh token rotado
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.PATRONS_SECRET_WRITER }}
+        run: |
+          f="${{ runner.temp }}/patreon_refresh_token"
+          [ -s "$f" ] || exit 0
+          gh secret set PATREON_REFRESH_TOKEN --repo "$GITHUB_REPOSITORY" < "$f"
 
       - uses: actions/upload-pages-artifact@v3
         with:
